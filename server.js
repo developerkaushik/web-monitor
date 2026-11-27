@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
 
@@ -27,7 +28,10 @@ const { createMonitorEngine } = require('./src/monitorEngine');
 const { createApiRouter } = require('./src/routes');
 
 function createApp(options = {}) {
-  const dbPath = options.dbPath || process.env.DB_PATH || path.join(__dirname, 'data', 'monitor.db');
+  const defaultDbPath = process.env.VERCEL
+    ? path.join(os.tmpdir(), 'uptime-sentinel', 'monitor.db')
+    : path.join(__dirname, 'data', 'monitor.db');
+  const dbPath = options.dbPath || process.env.DB_PATH || defaultDbPath;
   const store = createDatabase(dbPath, {
     adminUsername: options.adminUsername,
     adminPassword: options.adminPassword,
@@ -90,4 +94,9 @@ if (require.main === module) {
   process.on('SIGTERM', shutdown);
 }
 
-module.exports = { createApp };
+if (process.env.VERCEL) {
+  const { app } = createApp();
+  module.exports = app;
+} else {
+  module.exports = { createApp };
+}
