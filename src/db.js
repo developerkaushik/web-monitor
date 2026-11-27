@@ -1,15 +1,30 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { DatabaseSync } = require('node:sqlite');
 const { hashPassword, SESSION_TTL_HOURS } = require('./auth');
+const { createJsonStore } = require('./jsonStore');
+
+function loadSqlite() {
+  try {
+    return require('node:sqlite').DatabaseSync;
+  } catch {
+    return null;
+  }
+}
 
 /**
- * Creates and initializes a SQLite database instance.
+ * Creates and initializes a SQLite database instance, falling back to JSON store
+ * when node:sqlite is unavailable (e.g. Node 18/20/22 without --experimental-sqlite).
  * @param {string} dbPath
- * @param {{ adminUsername?: string, adminPassword?: string }} [options]
+ * @param {{ adminUsername?: string, adminPassword?: string, forceJsonStore?: boolean }} [options]
  */
 function createDatabase(dbPath, options = {}) {
+  const DatabaseSync = options.forceJsonStore ? null : loadSqlite();
+  if (!DatabaseSync) {
+    console.warn('[db] node:sqlite unavailable — using file-backed JSON store');
+    return createJsonStore(dbPath, options);
+  }
+
   if (dbPath !== ':memory:') {
     const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true });

@@ -31,6 +31,7 @@ function createApp(options = {}) {
   const store = createDatabase(dbPath, {
     adminUsername: options.adminUsername,
     adminPassword: options.adminPassword,
+    forceJsonStore: options.forceJsonStore,
   });
   const mailer = createMailer(store, { transport: options.transport });
   const engine = createMonitorEngine(store, mailer, {

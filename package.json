@@ -4,13 +4,13 @@
   "description": "Production-grade Website Uptime Monitoring & Multi-Recipient Incident Alerting",
   "main": "server.js",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=18.18.0"
   },
   "scripts": {
     "build": "node -e \"console.log('Uptime Sentinel build check complete')\"",
-    "start": "node --no-warnings server.js",
-    "dev": "node --no-warnings --watch server.js",
-    "test": "node --no-warnings --test tests/*.test.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test tests/*.test.js"
   },
   "keywords": [
     "uptime",

@@ -149,6 +149,54 @@ test('Monitor engine captures incidents and sends multi-recipient emails on down
   }
 });
 
+test('JSON fallback store works identically when node:sqlite is unavailable (Node 18/20/22)', async () => {
+  const target = await startTargetServer();
+  const transport = createMockTransport();
+  const { app, store, engine } = createApp({
+    dbPath: ':memory:',
+    forceJsonStore: true,
+    transport,
+    emitEvents: false,
+    adminUsername: 'admin',
+    adminPassword: 'json-password',
+  });
+
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'json-password' }),
+    });
+    assert.equal(loginRes.status, 200);
+    const cookieHeader = loginRes.headers.get('set-cookie').split(';')[0];
+
+    const m = store.createMonitor({
+      name: 'Hostinger Target',
+      url: target.url,
+      alert_emails: ['a@example.com', 'b@example.com'],
+    });
+    target.setMode('db_error_200');
+    const outcome = await engine.checkMonitor(m.id);
+    assert.equal(outcome.result.ok, false);
+    assert.equal(outcome.result.error_type, 'DB_ERROR');
+    assert.ok(outcome.openedIncident);
+
+    const incRes = await fetch(`${baseUrl}/api/incidents`, { headers: { Cookie: cookieHeader } });
+    assert.equal(incRes.status, 200);
+    const incidents = await incRes.json();
+    assert.equal(incidents.length, 1);
+  } finally {
+    await new Promise((r) => server.close(r));
+    store.close();
+    await target.close();
+  }
+});
+
 test('REST API requires admin login and supports CRUD, validation, password change, and logout', async () => {
   const target = await startTargetServer();
   const transport = createMockTransport();
@@ -363,6 +411,54 @@ test('Captures database connection errors (HTTP 200, HTTP 500, and JSON health) 
     assert.match(c3.result.error_message, /database status "disconnected"/i);
     assert.equal(transport.sent.length, 5);
   } finally {
+    store.close();
+    await target.close();
+  }
+});
+
+test('JSON fallback store works identically when node:sqlite is unavailable (Node 18/20/22)', async () => {
+  const target = await startTargetServer();
+  const transport = createMockTransport();
+  const { app, store, engine } = createApp({
+    dbPath: ':memory:',
+    forceJsonStore: true,
+    transport,
+    emitEvents: false,
+    adminUsername: 'admin',
+    adminPassword: 'json-password',
+  });
+
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'json-password' }),
+    });
+    assert.equal(loginRes.status, 200);
+    const cookieHeader = loginRes.headers.get('set-cookie').split(';')[0];
+
+    const m = store.createMonitor({
+      name: 'Hostinger Target',
+      url: target.url,
+      alert_emails: ['a@example.com', 'b@example.com'],
+    });
+    target.setMode('db_error_200');
+    const outcome = await engine.checkMonitor(m.id);
+    assert.equal(outcome.result.ok, false);
+    assert.equal(outcome.result.error_type, 'DB_ERROR');
+    assert.ok(outcome.openedIncident);
+
+    const incRes = await fetch(`${baseUrl}/api/incidents`, { headers: { Cookie: cookieHeader } });
+    assert.equal(incRes.status, 200);
+    const incidents = await incRes.json();
+    assert.equal(incidents.length, 1);
+  } finally {
+    await new Promise((r) => server.close(r));
     store.close();
     await target.close();
   }
