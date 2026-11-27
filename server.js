@@ -95,4 +95,26 @@ if (require.main === module) {
   process.on('SIGTERM', shutdown);
 }
 
-module.exports = { createApp };
+if (process.env.VERCEL) {
+  let cachedApp = null;
+  let initError = null;
+  try {
+    cachedApp = createApp().app;
+  } catch (err) {
+    initError = err;
+    console.error('[vercel] Failed to initialize Express app:', err);
+  }
+  const vercelHandler = (req, res) => {
+    if (initError || !cachedApp) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Server initialization failed', details: initError?.message || 'Unknown' }));
+      return;
+    }
+    return cachedApp(req, res);
+  };
+  vercelHandler.createApp = createApp;
+  module.exports = vercelHandler;
+} else {
+  module.exports = { createApp };
+}
