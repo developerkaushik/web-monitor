@@ -3,6 +3,9 @@ const { addClient, broadcast } = require('./events');
 const {
   verifyPassword,
   hashPassword,
+  signSessionToken,
+  verifySessionToken,
+  revokeSessionToken,
   extractToken,
   requireAuth,
   buildSessionCookie,
@@ -63,7 +66,7 @@ function createApiRouter({ store, engine, mailer }) {
     }
 
     store.pruneExpiredSessions();
-    const token = store.createSession(user.id);
+    const token = signSessionToken(user);
     res.setHeader('Set-Cookie', buildSessionCookie(token, req));
     res.json({
       user: { id: user.id, username: user.username, role: user.role },
@@ -73,6 +76,7 @@ function createApiRouter({ store, engine, mailer }) {
   router.post('/auth/logout', (req, res) => {
     const token = extractToken(req);
     if (token) {
+      revokeSessionToken(token);
       store.deleteSession(token);
     }
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
@@ -81,7 +85,7 @@ function createApiRouter({ store, engine, mailer }) {
 
   router.get('/auth/me', (req, res) => {
     const token = extractToken(req);
-    const session = token ? store.getSession(token) : null;
+    const session = token ? verifySessionToken(token) || store.getSession(token) : null;
     if (!session) {
       return res.status(401).json({ authenticated: false });
     }
