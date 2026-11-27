@@ -62,12 +62,15 @@ function createMailer(store, options = {}) {
     if (!settings.smtp_host) return null;
 
     const port = Number(settings.smtp_port || 587);
-    const secure = settings.smtp_secure === 'true' || port === 465;
+    // Port 465 uses implicit TLS; ports 587/25/2525 use plaintext + STARTTLS (setting secure:true on 587 causes SSL wrong version number)
+    const isStartTlsPort = port === 587 || port === 25 || port === 2525;
+    const secure = port === 465 ? true : isStartTlsPort ? false : settings.smtp_secure === 'true';
 
     const config = {
       host: settings.smtp_host,
       port,
       secure,
+      ...(isStartTlsPort && settings.smtp_secure === 'true' ? { requireTLS: true } : {}),
     };
 
     if (settings.smtp_user) {

@@ -48,7 +48,17 @@ function createApiRouter({ store, engine, mailer }) {
   }
 
   router.get('/health', (_req, res) => {
-    res.json({ ok: true, timestamp: new Date().toISOString() });
+    const hasPg = Boolean(
+      process.env.DATABASE_URL ||
+        process.env.POSTGRES_URL ||
+        process.env.POSTGRES_URL_NON_POOLING ||
+        process.env.NEON_DATABASE_URL
+    );
+    res.json({
+      ok: true,
+      storage: hasPg ? 'postgres' : 'local',
+      timestamp: new Date().toISOString(),
+    });
   });
 
   // Serverless Cron endpoint (e.g. Vercel Cron or cron-job.org)

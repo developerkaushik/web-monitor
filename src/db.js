@@ -20,7 +20,13 @@ function loadSqlite() {
  * @param {{ adminUsername?: string, adminPassword?: string, forceJsonStore?: boolean, databaseUrl?: string }} [options]
  */
 function createDatabase(dbPath, options = {}) {
-  const pgUrl = options.databaseUrl || (dbPath !== ':memory:' && !options.forceJsonStore ? process.env.DATABASE_URL : '');
+  const envPgUrl =
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.POSTGRES_URL_NON_POOLING ||
+    process.env.NEON_DATABASE_URL ||
+    '';
+  const pgUrl = options.databaseUrl || (dbPath !== ':memory:' && !options.forceJsonStore ? envPgUrl : '');
   if (pgUrl) {
     return createPostgresStore(pgUrl, options);
   }
