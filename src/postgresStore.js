@@ -32,7 +32,11 @@ function createPostgresStore(connectionString, options = {}) {
     ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
     max: 5,
     idleTimeoutMillis: 20000,
-    connectionTimeoutMillis: 10000,
+    connectionTimeoutMillis: 15000,
+  });
+
+  pool.on('error', (err) => {
+    console.error('[pg] idle client error:', err.message);
   });
 
   let initialized = false;

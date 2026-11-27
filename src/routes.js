@@ -146,6 +146,15 @@ function createApiRouter({ store, engine, mailer }) {
   });
 
   router.get('/events', (req, res) => {
+    if (process.env.VERCEL) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+      });
+      res.write(`event: connected\ndata: ${JSON.stringify({ mode: 'poll', ts: new Date().toISOString() })}\n\n`);
+      res.end();
+      return;
+    }
     addClient(res);
     req.on('close', () => {});
   });

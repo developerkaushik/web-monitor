@@ -12,6 +12,7 @@ const state = {
 };
 
 let sseSource = null;
+let pollTimer = null;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -295,13 +296,32 @@ function setupSSE() {
   if (sseSource) {
     sseSource.close();
   }
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
   const badge = $('#sseStatus');
   const text = badge.querySelector('.sse-text');
   sseSource = new EventSource('/api/events');
 
-  sseSource.addEventListener('connected', () => {
+  sseSource.addEventListener('connected', (e) => {
     badge.className = 'sse-badge connected';
-    text.textContent = 'Live';
+    let data = {};
+    try {
+      data = JSON.parse(e.data || '{}');
+    } catch {
+      // Ignore parse error
+    }
+    if (data.mode === 'poll') {
+      text.textContent = 'Live (15s)';
+      sseSource.close();
+      sseSource = null;
+      pollTimer = setInterval(() => {
+        if (state.user) loadAll().catch(() => {});
+      }, 15000);
+    } else {
+      text.textContent = 'Live';
+    }
   });
 
   sseSource.onerror = () => {
@@ -514,6 +534,10 @@ function exitDashboard() {
   if (sseSource) {
     sseSource.close();
     sseSource = null;
+  }
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
   }
   $('#appShell').classList.add('hidden');
   $('#loginScreen').classList.remove('hidden');
