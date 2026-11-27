@@ -1,0 +1,27 @@
+{
+  "name": "uptime-sentinel",
+  "version": "1.0.0",
+  "description": "Production-grade Website Uptime Monitoring & Multi-Recipient Incident Alerting",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "node -e \"console.log('Uptime Sentinel build check complete')\"",
+    "start": "node --no-warnings server.js",
+    "dev": "node --no-warnings --watch server.js",
+    "test": "node --no-warnings --test tests/*.test.js"
+  },
+  "keywords": [
+    "uptime",
+    "monitoring",
+    "incidents",
+    "email-alerts",
+    "observability"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.1.0",
+    "nodemailer": "^6.10.0"
+  }
+}

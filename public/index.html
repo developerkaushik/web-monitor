@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Uptime Sentinel — Website Monitoring &amp; Incident Alerting</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- ADMIN LOGIN GATE (shown by default; main dashboard stays hidden until authenticated) -->
+  <div id="loginScreen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="brand-mark">
+          <span class="pulse-dot"></span>
+        </div>
+        <div>
+          <h1>Uptime Sentinel</h1>
+          <span class="subtitle">Admin Sign In Required</span>
+        </div>
+      </div>
+
+      <form id="loginForm" autocomplete="on">
+        <label class="field">
+          <span>Admin Username</span>
+          <input type="text" name="username" id="loginUsername" class="input" required autocomplete="username" placeholder="admin" />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" name="password" id="loginPassword" class="input" required autocomplete="current-password" placeholder="Enter admin password" />
+        </label>
+        <div id="loginError" class="auth-error hidden"></div>
+        <button type="submit" id="btnLogin" class="btn btn-primary auth-submit">Sign In to Dashboard</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">
+          <span class="pulse-dot"></span>
+        </div>
+        <div>
+          <h1>Uptime Sentinel</h1>
+          <span class="subtitle">Real-time Website Monitoring &amp; Multi-Email Incident Alerts</span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <div id="sseStatus" class="sse-badge" title="Real-time event stream">
+          <span class="sse-dot"></span>
+          <span class="sse-text">Connecting...</span>
+        </div>
+        <span id="currentUserBadge" class="user-pill">admin</span>
+        <button id="btnNewMonitor" class="btn btn-primary">+ Add Monitor</button>
+        <button id="btnLogout" class="btn btn-ghost" type="button">Logout</button>
+      </div>
+    </header>
+
+    <section class="kpi-grid" id="kpiGrid">
+      <div class="kpi-card">
+        <span class="kpi-label">Monitors Up</span>
+        <strong class="kpi-value text-up" id="kpiUp">0 / 0</strong>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Monitors Down</span>
+        <strong class="kpi-value text-down" id="kpiDown">0</strong>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Open Incidents</span>
+        <strong class="kpi-value text-warn" id="kpiIncidents">0</strong>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">24h Uptime</span>
+        <strong class="kpi-value" id="kpiUptime">100%</strong>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Avg Latency</span>
+        <strong class="kpi-value mono" id="kpiLatency">—</strong>
+      </div>
+    </section>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="monitors">Monitors</button>
+      <button class="tab" data-tab="incidents">Incidents <span class="badge" id="tabIncidentBadge">0</span></button>
+      <button class="tab" data-tab="alerts">Alert Logs</button>
+      <button class="tab" data-tab="settings">SMTP &amp; Settings</button>
+    </nav>
+
+    <main>
+      <!-- MONITORS TAB -->
+      <section id="view-monitors" class="view active">
+        <div class="toolbar">
+          <input type="search" id="monitorSearch" class="input search-input" placeholder="Filter monitors by name, URL, or email..." />
+          <div class="filter-pills">
+            <button class="pill active" data-filter="all">All</button>
+            <button class="pill" data-filter="up">Up</button>
+            <button class="pill" data-filter="down">Down</button>
+            <button class="pill" data-filter="paused">Paused</button>
+          </div>
+        </div>
+        <div id="monitorsList" class="monitors-list"></div>
+      </section>
+
+      <!-- INCIDENTS TAB -->
+      <section id="view-incidents" class="view">
+        <div class="toolbar">
+          <div class="filter-pills" id="incidentFilters">
+            <button class="pill active" data-incident-status="all">All Incidents</button>
+            <button class="pill" data-incident-status="open">Open</button>
+            <button class="pill" data-incident-status="resolved">Resolved</button>
+          </div>
+        </div>
+        <div id="incidentsList" class="incidents-list"></div>
+      </section>
+
+      <!-- ALERT LOGS TAB -->
+      <section id="view-alerts" class="view">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Email Alert Delivery History</h2>
+            <span class="muted">All incident and recovery notifications dispatched to configured recipients</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Time (UTC)</th>
+                  <th>Event</th>
+                  <th>Monitor</th>
+                  <th>Recipients</th>
+                  <th>Subject</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="alertsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS TAB -->
+      <section id="view-settings" class="view">
+        <div class="settings-grid">
+          <form id="settingsForm" class="panel">
+            <div class="panel-header">
+              <h2>SMTP &amp; Global Alert Configuration</h2>
+              <span class="muted">Configure outbound SMTP to deliver real emails to multiple recipients</span>
+            </div>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>SMTP Host</span>
+                <input type="text" name="smtp_host" class="input" placeholder="smtp.gmail.com" />
+              </label>
+              <label class="field">
+                <span>SMTP Port</span>
+                <input type="number" name="smtp_port" class="input" placeholder="587" />
+              </label>
+              <label class="field">
+                <span>SMTP Username</span>
+                <input type="text" name="smtp_user" class="input" placeholder="alerts@yourdomain.com" />
+              </label>
+              <label class="field">
+                <span>SMTP Password <small class="muted" id="smtpPassHint"></small></span>
+                <input type="password" name="smtp_pass" class="input" placeholder="Leave blank to keep existing" />
+              </label>
+              <label class="field">
+                <span>From Address</span>
+                <input type="text" name="smtp_from" class="input" placeholder="Uptime Sentinel <alerts@yourdomain.com>" />
+              </label>
+              <label class="field">
+                <span>Use SSL/TLS (Port 465)</span>
+                <select name="smtp_secure" class="input">
+                  <option value="false">No (STARTTLS / 587)</option>
+                  <option value="true">Yes (SSL / 465)</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="field">
+              <span>Global Default Alert Emails (comma-separated, notified on all monitors)</span>
+              <input type="text" name="global_alert_emails" class="input" placeholder="oncall@company.com, devops@company.com, cto@company.com" />
+            </label>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>Send Recovery Email When Back UP</span>
+                <select name="notify_on_recovery" class="input">
+                  <option value="true">Enabled</option>
+                  <option value="false">Disabled</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Check History Retention (days)</span>
+                <input type="number" name="retention_days" class="input" min="1" max="365" />
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Save Settings</button>
+            </div>
+          </form>
+
+          <div class="settings-side">
+            <div class="panel">
+              <div class="panel-header">
+                <h2>Test Multi-Email Delivery</h2>
+                <span class="muted">Verify your SMTP credentials and recipient list immediately</span>
+              </div>
+              <label class="field">
+                <span>Test Recipient Emails (comma-separated)</span>
+                <input type="text" id="testEmailInput" class="input" placeholder="alice@company.com, bob@company.com" />
+              </label>
+              <div class="form-actions">
+                <button id="btnTestEmail" class="btn btn-secondary" type="button">Send Test Email</button>
+              </div>
+              <div id="testEmailResult" class="test-result hidden"></div>
+            </div>
+
+            <form id="changePasswordForm" class="panel">
+              <div class="panel-header">
+                <h2>Admin Password</h2>
+                <span class="muted">Update your dashboard administrator password</span>
+              </div>
+              <label class="field">
+                <span>Current Password</span>
+                <input type="password" name="current_password" class="input" required autocomplete="current-password" />
+              </label>
+              <label class="field">
+                <span>New Password (min 6 chars)</span>
+                <input type="password" name="new_password" class="input" required minlength="6" autocomplete="new-password" />
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-secondary">Update Password</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ADD / EDIT MONITOR MODAL -->
+  <div id="monitorModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modalTitle">Add Website Monitor</h2>
+        <button id="btnCloseModal" class="icon-btn" aria-label="Close">&times;</button>
+      </div>
+      <form id="monitorForm">
+        <input type="hidden" name="id" />
+        <div class="form-grid">
+          <label class="field">
+            <span>Monitor Name *</span>
+            <input type="text" name="name" class="input" required placeholder="Production API" />
+          </label>
+          <label class="field">
+            <span>HTTP Method</span>
+            <select name="method" class="input">
+              <option value="GET">GET</option>
+              <option value="HEAD">HEAD</option>
+              <option value="POST">POST</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Target URL *</span>
+          <input type="url" name="url" class="input" required placeholder="https://api.example.com/health" />
+        </label>
+
+        <div class="form-grid three-col">
+          <label class="field">
+            <span>Interval (sec)</span>
+            <input type="number" name="interval_seconds" class="input" min="5" value="60" />
+          </label>
+          <label class="field">
+            <span>Timeout (ms)</span>
+            <input type="number" name="timeout_ms" class="input" min="500" value="10000" />
+          </label>
+          <label class="field">
+            <span>Expected Status</span>
+            <input type="number" name="expected_status" class="input" min="100" max="599" value="200" />
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>Consecutive Failures Before Alert</span>
+            <input type="number" name="failure_threshold" class="input" min="1" max="10" value="1" />
+          </label>
+          <label class="field">
+            <span>Response Keyword (optional)</span>
+            <input type="text" name="keyword" class="input" placeholder="healthy" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Alert Recipient Emails (comma or newline separated)</span>
+          <textarea name="alert_emails" class="input textarea" rows="2" placeholder="ops@example.com, lead@example.com, pager@example.com"></textarea>
+        </label>
+
+        <label class="field" style="flex-direction:row;align-items:center;gap:10px;cursor:pointer;">
+          <input type="checkbox" name="detect_db_errors" checked style="width:16px;height:16px;" />
+          <span>Detect database &amp; backend fatal errors (even on HTTP 200)</span>
+        </label>
+
+        <div class="modal-footer">
+          <button type="button" id="btnCancelModal" class="btn btn-ghost">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btnSaveMonitor">Save Monitor</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
