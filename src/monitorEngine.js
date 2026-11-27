@@ -180,13 +180,13 @@ function createMonitorEngine(store, mailer, options = {}) {
 
   async function checkMonitor(monitorOrId) {
     const monitor =
-      typeof monitorOrId === 'number' ? store.getMonitorById(monitorOrId) : monitorOrId;
+      typeof monitorOrId === 'number' ? await store.getMonitorById(monitorOrId) : monitorOrId;
     if (!monitor) return null;
     if (inFlight.has(monitor.id)) return inFlight.get(monitor.id);
 
     const promise = (async () => {
       const result = await performHttpCheck(monitor);
-      store.recordCheck(monitor.id, {
+      await store.recordCheck(monitor.id, {
         status: result.status,
         status_code: result.status_code,
         latency_ms: result.latency_ms,
@@ -198,7 +198,7 @@ function createMonitorEngine(store, mailer, options = {}) {
       let alertLog = null;
 
       if (result.ok) {
-        store.updateMonitorRuntime(monitor.id, {
+        await store.updateMonitorRuntime(monitor.id, {
           status: 'up',
           consecutive_failures: 0,
           last_status_code: result.status_code,
@@ -206,9 +206,9 @@ function createMonitorEngine(store, mailer, options = {}) {
           last_error: null,
         });
 
-        const openIncident = store.getOpenIncident(monitor.id);
+        const openIncident = await store.getOpenIncident(monitor.id);
         if (openIncident) {
-          resolvedIncident = store.resolveIncident(openIncident.id);
+          resolvedIncident = await store.resolveIncident(openIncident.id);
           alertLog = await mailer.sendRecoveryAlert(monitor, resolvedIncident);
           if (emitEvents) {
             broadcast('incident:resolved', { monitorId: monitor.id, incident: resolvedIncident, alertLog });
@@ -220,7 +220,7 @@ function createMonitorEngine(store, mailer, options = {}) {
         const reachedThreshold = failures >= threshold;
         const nextStatus = reachedThreshold ? 'down' : monitor.status || 'unknown';
 
-        store.updateMonitorRuntime(monitor.id, {
+        await store.updateMonitorRuntime(monitor.id, {
           status: nextStatus,
           consecutive_failures: failures,
           last_status_code: result.status_code,
@@ -229,9 +229,9 @@ function createMonitorEngine(store, mailer, options = {}) {
         });
 
         if (reachedThreshold) {
-          const existingOpen = store.getOpenIncident(monitor.id);
+          const existingOpen = await store.getOpenIncident(monitor.id);
           if (!existingOpen) {
-            openedIncident = store.createIncident({
+            openedIncident = await store.createIncident({
               monitor_id: monitor.id,
               title: `${monitor.name} is down`,
               severity: 'critical',
@@ -248,7 +248,7 @@ function createMonitorEngine(store, mailer, options = {}) {
       }
 
       if (emitEvents) {
-        const updated = store.getMonitorById(monitor.id);
+        const updated = await store.getMonitorById(monitor.id);
         broadcast('monitor:checked', {
           monitor: updated,
           check: result,
@@ -284,12 +284,14 @@ function createMonitorEngine(store, mailer, options = {}) {
 
   async function tick() {
     try {
-      const due = store.getDueMonitors();
-      if (due.length === 0) return;
+      const due = await store.getDueMonitors();
+      if (due.length === 0) return 0;
       await Promise.allSettled(due.map((m) => checkMonitor(m)));
+      return due.length;
     } catch (err) {
       console.error('[monitorEngine] tick error:', err);
-      await notifySystemError('Monitor Scheduler / SQLite', err);
+      await notifySystemError('Monitor Scheduler / Database', err);
+      return 0;
     }
   }
 
@@ -304,10 +306,10 @@ function createMonitorEngine(store, mailer, options = {}) {
       tick().catch((err) => console.error('[monitorEngine] tick error:', err));
     }, tickMs);
 
-    pruneHandle = setInterval(() => {
+    pruneHandle = setInterval(async () => {
       try {
-        const settings = store.getSettings();
-        store.pruneOldChecks(Number(settings.retention_days || 30));
+        const settings = await store.getSettings();
+        await store.pruneOldChecks(Number(settings.retention_days || 30));
       } catch (err) {
         console.error('[monitorEngine] prune error:', err);
       }

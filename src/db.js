@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { hashPassword, SESSION_TTL_HOURS } = require('./auth');
 const { createJsonStore } = require('./jsonStore');
+const { createPostgresStore } = require('./postgresStore');
 
 function loadSqlite() {
   try {
@@ -13,12 +14,17 @@ function loadSqlite() {
 }
 
 /**
- * Creates and initializes a SQLite database instance, falling back to JSON store
- * when node:sqlite is unavailable (e.g. Node 18/20/22 without --experimental-sqlite).
+ * Creates and initializes a database store (Neon/Postgres if DATABASE_URL is set,
+ * otherwise SQLite with automatic JSON fallback for Node 18/20/22).
  * @param {string} dbPath
- * @param {{ adminUsername?: string, adminPassword?: string, forceJsonStore?: boolean }} [options]
+ * @param {{ adminUsername?: string, adminPassword?: string, forceJsonStore?: boolean, databaseUrl?: string }} [options]
  */
 function createDatabase(dbPath, options = {}) {
+  const pgUrl = options.databaseUrl || (dbPath !== ':memory:' && !options.forceJsonStore ? process.env.DATABASE_URL : '');
+  if (pgUrl) {
+    return createPostgresStore(pgUrl, options);
+  }
+
   const DatabaseSync = options.forceJsonStore ? null : loadSqlite();
   if (!DatabaseSync) {
     console.warn('[db] node:sqlite unavailable — using file-backed JSON store');
@@ -640,6 +646,7 @@ function createStore(db) {
 
   return {
     db,
+    async init() {},
     listMonitors,
     getMonitorById,
     createMonitor,

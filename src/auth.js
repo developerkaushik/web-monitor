@@ -141,22 +141,26 @@ function extractToken(req) {
  * @param {ReturnType<import('./db').createDatabase>} store
  */
 function requireAuth(store) {
-  return (req, res, next) => {
-    const token = extractToken(req);
-    if (!token) {
-      return res.status(401).json({ error: 'Authentication required' });
+  return async (req, res, next) => {
+    try {
+      const token = extractToken(req);
+      if (!token) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+      const session = verifySessionToken(token) || (await store.getSession(token));
+      if (!session) {
+        return res.status(401).json({ error: 'Session expired or invalid' });
+      }
+      req.user = {
+        id: session.user_id,
+        username: session.username,
+        role: session.role,
+      };
+      req.sessionToken = token;
+      next();
+    } catch (err) {
+      next(err);
     }
-    const session = verifySessionToken(token) || store.getSession(token);
-    if (!session) {
-      return res.status(401).json({ error: 'Session expired or invalid' });
-    }
-    req.user = {
-      id: session.user_id,
-      username: session.username,
-      role: session.role,
-    };
-    req.sessionToken = token;
-    next();
   };
 }
 

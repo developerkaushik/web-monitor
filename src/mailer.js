@@ -84,13 +84,13 @@ function createMailer(store, options = {}) {
    * Sends an email to multiple recipients and records the delivery attempt.
    */
   async function dispatch({ monitor, incident, eventType, subject, text, html, explicitRecipients }) {
-    const settings = store.getSettings();
+    const settings = await store.getSettings();
     const recipients = explicitRecipients
       ? resolveRecipients(explicitRecipients)
       : resolveRecipients(monitor?.alert_emails, settings.global_alert_emails);
 
     if (recipients.length === 0) {
-      return store.recordAlertLog({
+      return await store.recordAlertLog({
         incident_id: incident?.id ?? null,
         monitor_id: monitor?.id ?? 0,
         event_type: eventType,
@@ -103,7 +103,7 @@ function createMailer(store, options = {}) {
 
     const transport = buildTransport(settings);
     if (!transport) {
-      return store.recordAlertLog({
+      return await store.recordAlertLog({
         incident_id: incident?.id ?? null,
         monitor_id: monitor?.id ?? 0,
         event_type: eventType,
@@ -123,7 +123,7 @@ function createMailer(store, options = {}) {
         html,
       });
 
-      return store.recordAlertLog({
+      return await store.recordAlertLog({
         incident_id: incident?.id ?? null,
         monitor_id: monitor?.id ?? 0,
         event_type: eventType,
@@ -132,7 +132,7 @@ function createMailer(store, options = {}) {
         delivery_status: 'sent',
       });
     } catch (err) {
-      return store.recordAlertLog({
+      return await store.recordAlertLog({
         incident_id: incident?.id ?? null,
         monitor_id: monitor?.id ?? 0,
         event_type: eventType,
@@ -176,7 +176,7 @@ function createMailer(store, options = {}) {
   }
 
   async function sendRecoveryAlert(monitor, incident) {
-    const settings = store.getSettings();
+    const settings = await store.getSettings();
     if (settings.notify_on_recovery === 'false') return null;
 
     const durationStr = formatDuration(incident.duration_seconds);
@@ -206,7 +206,7 @@ function createMailer(store, options = {}) {
   }
 
   async function sendTestEmail(explicitRecipients) {
-    const settings = store.getSettings();
+    const settings = await store.getSettings();
     const recipients = resolveRecipients(explicitRecipients, settings.global_alert_emails);
     const subject = '[TEST] Uptime Sentinel Alert Verification';
     const text = `This is a test email from Uptime Sentinel confirming multi-recipient alerting works (${recipients.join(', ')}).`;
@@ -256,7 +256,7 @@ function createMailer(store, options = {}) {
   async function sendSystemErrorAlert({ component, errorType, message }) {
     let settings = {};
     try {
-      settings = store.getSettings();
+      settings = await store.getSettings();
     } catch {
       settings = {
         smtp_host: process.env.SMTP_HOST || '',

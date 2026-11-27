@@ -51,7 +51,26 @@ function createApiRouter({ store, engine, mailer }) {
     res.json({ ok: true, timestamp: new Date().toISOString() });
   });
 
-  router.post('/auth/login', (req, res) => {
+  // Serverless Cron endpoint (e.g. Vercel Cron or cron-job.org)
+  async function handleCronCheck(req, res) {
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const authHeader = req.headers.authorization || '';
+      const querySecret = req.query?.secret || '';
+      const validBearer = authHeader === `Bearer ${cronSecret}`;
+      const validQuery = querySecret === cronSecret;
+      if (!validBearer && !validQuery) {
+        return res.status(401).json({ error: 'Invalid cron secret' });
+      }
+    }
+    const checked = await engine.tick();
+    res.json({ ok: true, checked, timestamp: new Date().toISOString() });
+  }
+
+  router.get('/cron/check', handleCronCheck);
+  router.post('/cron/check', handleCronCheck);
+
+  router.post('/auth/login', async (req, res) => {
     if (!checkLoginRateLimit(req.ip || 'unknown')) {
       return res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
     }
@@ -60,12 +79,12 @@ function createApiRouter({ store, engine, mailer }) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    const user = store.getUserByUsername(String(username));
+    const user = await store.getUserByUsername(String(username));
     if (!user || !verifyPassword(String(password), user.password_hash)) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    store.pruneExpiredSessions();
+    await store.pruneExpiredSessions();
     const token = signSessionToken(user);
     res.setHeader('Set-Cookie', buildSessionCookie(token, req));
     res.json({
@@ -73,19 +92,19 @@ function createApiRouter({ store, engine, mailer }) {
     });
   });
 
-  router.post('/auth/logout', (req, res) => {
+  router.post('/auth/logout', async (req, res) => {
     const token = extractToken(req);
     if (token) {
       revokeSessionToken(token);
-      store.deleteSession(token);
+      await store.deleteSession(token);
     }
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
     res.json({ ok: true });
   });
 
-  router.get('/auth/me', (req, res) => {
+  router.get('/auth/me', async (req, res) => {
     const token = extractToken(req);
-    const session = token ? verifySessionToken(token) || store.getSession(token) : null;
+    const session = token ? verifySessionToken(token) || (await store.getSession(token)) : null;
     if (!session) {
       return res.status(401).json({ authenticated: false });
     }
@@ -98,7 +117,7 @@ function createApiRouter({ store, engine, mailer }) {
   // Protect all monitoring, incident, alert, settings, and SSE routes
   router.use(requireAuth(store));
 
-  router.post('/auth/change-password', (req, res) => {
+  router.post('/auth/change-password', async (req, res) => {
     const { current_password, new_password } = req.body || {};
     if (!current_password || !new_password) {
       return res.status(400).json({ error: 'Current password and new password are required' });
@@ -107,12 +126,12 @@ function createApiRouter({ store, engine, mailer }) {
       return res.status(400).json({ error: 'New password must be at least 6 characters' });
     }
 
-    const user = store.getUserById(req.user.id);
+    const user = await store.getUserById(req.user.id);
     if (!user || !verifyPassword(String(current_password), user.password_hash)) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
 
-    store.updateUserPassword(user.id, hashPassword(String(new_password)));
+    await store.updateUserPassword(user.id, hashPassword(String(new_password)));
     res.json({ ok: true });
   });
 
@@ -121,22 +140,22 @@ function createApiRouter({ store, engine, mailer }) {
     req.on('close', () => {});
   });
 
-  router.get('/summary', (_req, res) => {
-    res.json(store.getSummary());
+  router.get('/summary', async (_req, res) => {
+    res.json(await store.getSummary());
   });
 
-  router.get('/monitors', (_req, res) => {
-    res.json(store.listMonitors());
+  router.get('/monitors', async (_req, res) => {
+    res.json(await store.listMonitors());
   });
 
-  router.get('/monitors/:id', (req, res) => {
+  router.get('/monitors/:id', async (req, res) => {
     const id = Number(req.params.id);
-    const monitor = store.getMonitorById(id);
+    const monitor = await store.getMonitorById(id);
     if (!monitor) return res.status(404).json({ error: 'Monitor not found' });
     res.json(monitor);
   });
 
-  router.post('/monitors', (req, res) => {
+  router.post('/monitors', async (req, res) => {
     const { name, url, interval_seconds, timeout_ms, expected_status, failure_threshold } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ error: 'Monitor name is required' });
@@ -157,20 +176,26 @@ function createApiRouter({ store, engine, mailer }) {
       return res.status(400).json({ error: 'Failure threshold must be at least 1' });
     }
 
-    const created = store.createMonitor(req.body);
+    const created = await store.createMonitor(req.body);
     broadcast('monitor:created', created);
 
-    // Run an immediate initial check asynchronously if not paused
+    // On serverless (Vercel), await the initial check before returning so it finishes before freeze
     if (!created.paused) {
-      engine.checkMonitor(created.id).catch((err) => {
-        console.error('[routes] initial check error:', err);
-      });
+      if (process.env.VERCEL) {
+        await engine.checkMonitor(created.id).catch((err) => {
+          console.error('[routes] initial check error:', err);
+        });
+      } else {
+        engine.checkMonitor(created.id).catch((err) => {
+          console.error('[routes] initial check error:', err);
+        });
+      }
     }
 
-    res.status(201).json(created);
+    res.status(201).json(await store.getMonitorById(created.id));
   });
 
-  router.put('/monitors/:id', (req, res) => {
+  router.put('/monitors/:id', async (req, res) => {
     const id = Number(req.params.id);
     if (req.body?.url !== undefined && !isValidHttpUrl(String(req.body.url).trim())) {
       return res.status(400).json({ error: 'A valid http:// or https:// URL is required' });
@@ -178,15 +203,15 @@ function createApiRouter({ store, engine, mailer }) {
     if (req.body?.interval_seconds !== undefined && Number(req.body.interval_seconds) < 5) {
       return res.status(400).json({ error: 'Interval must be at least 5 seconds' });
     }
-    const updated = store.updateMonitor(id, req.body || {});
+    const updated = await store.updateMonitor(id, req.body || {});
     if (!updated) return res.status(404).json({ error: 'Monitor not found' });
     broadcast('monitor:updated', updated);
     res.json(updated);
   });
 
-  router.delete('/monitors/:id', (req, res) => {
+  router.delete('/monitors/:id', async (req, res) => {
     const id = Number(req.params.id);
-    const deleted = store.deleteMonitor(id);
+    const deleted = await store.deleteMonitor(id);
     if (!deleted) return res.status(404).json({ error: 'Monitor not found' });
     broadcast('monitor:deleted', { id });
     res.json({ deleted: true, id });
@@ -194,27 +219,27 @@ function createApiRouter({ store, engine, mailer }) {
 
   router.post('/monitors/:id/check', async (req, res) => {
     const id = Number(req.params.id);
-    const monitor = store.getMonitorById(id);
+    const monitor = await store.getMonitorById(id);
     if (!monitor) return res.status(404).json({ error: 'Monitor not found' });
 
     const outcome = await engine.checkMonitor(id);
-    const fresh = store.getMonitorById(id);
+    const fresh = await store.getMonitorById(id);
     res.json({ monitor: fresh, outcome });
   });
 
-  router.post('/monitors/:id/toggle', (req, res) => {
+  router.post('/monitors/:id/toggle', async (req, res) => {
     const id = Number(req.params.id);
-    const monitor = store.getMonitorById(id);
+    const monitor = await store.getMonitorById(id);
     if (!monitor) return res.status(404).json({ error: 'Monitor not found' });
-    const updated = store.updateMonitor(id, { paused: !monitor.paused });
+    const updated = await store.updateMonitor(id, { paused: !monitor.paused });
     broadcast('monitor:updated', updated);
     res.json(updated);
   });
 
-  router.get('/incidents', (req, res) => {
+  router.get('/incidents', async (req, res) => {
     const { status, monitorId, limit } = req.query;
     res.json(
-      store.listIncidents({
+      await store.listIncidents({
         status: status ? String(status) : 'all',
         monitorId: monitorId ? Number(monitorId) : undefined,
         limit: limit ? Number(limit) : 100,
@@ -222,15 +247,15 @@ function createApiRouter({ store, engine, mailer }) {
     );
   });
 
-  router.patch('/incidents/:id', (req, res) => {
+  router.patch('/incidents/:id', async (req, res) => {
     const id = Number(req.params.id);
     const { acknowledged, notes, resolve } = req.body || {};
 
     let incident = null;
     if (resolve) {
-      incident = store.resolveIncident(id, notes);
+      incident = await store.resolveIncident(id, notes);
     } else {
-      incident = store.updateIncident(id, { acknowledged, notes });
+      incident = await store.updateIncident(id, { acknowledged, notes });
     }
 
     if (!incident) return res.status(404).json({ error: 'Incident not found' });
@@ -238,13 +263,13 @@ function createApiRouter({ store, engine, mailer }) {
     res.json(incident);
   });
 
-  router.get('/alerts', (req, res) => {
+  router.get('/alerts', async (req, res) => {
     const limit = req.query.limit ? Number(req.query.limit) : 100;
-    res.json(store.listAlertLogs(limit));
+    res.json(await store.listAlertLogs(limit));
   });
 
-  router.get('/settings', (_req, res) => {
-    const settings = store.getSettings();
+  router.get('/settings', async (_req, res) => {
+    const settings = await store.getSettings();
     const hasPassword = Boolean(settings.smtp_pass);
     res.json({
       ...settings,
@@ -253,7 +278,7 @@ function createApiRouter({ store, engine, mailer }) {
     });
   });
 
-  router.put('/settings', (req, res) => {
+  router.put('/settings', async (req, res) => {
     const allowedKeys = [
       'smtp_host',
       'smtp_port',
@@ -273,7 +298,7 @@ function createApiRouter({ store, engine, mailer }) {
         updates[key] = req.body[key];
       }
     }
-    const saved = store.updateSettings(updates);
+    const saved = await store.updateSettings(updates);
     res.json({
       ...saved,
       smtp_pass: '',

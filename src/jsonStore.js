@@ -133,6 +133,7 @@ function createJsonStore(dbPath, options = {}) {
 
   return {
     db: null,
+    async init() {},
     listMonitors() {
       return [...state.monitors].sort((a, b) => b.id - a.id).map((m) => enrichMonitor(m, 30));
     },
