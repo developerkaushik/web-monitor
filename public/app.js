@@ -316,8 +316,14 @@ function setupSSE() {
       text.textContent = 'Live (15s)';
       sseSource.close();
       sseSource = null;
-      pollTimer = setInterval(() => {
-        if (state.user) loadAll().catch(() => {});
+      pollTimer = setInterval(async () => {
+        if (!state.user) return;
+        try {
+          await api('/api/monitors/check-due', { method: 'POST' });
+          await loadAll();
+        } catch {
+          // Ignore transient poll errors
+        }
       }, 15000);
     } else {
       text.textContent = 'Live';

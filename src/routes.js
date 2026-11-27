@@ -167,6 +167,11 @@ function createApiRouter({ store, engine, mailer }) {
     res.json(await store.listMonitors());
   });
 
+  router.post('/monitors/check-due', async (_req, res) => {
+    const checked = await engine.tick();
+    res.json({ ok: true, checked });
+  });
+
   router.get('/monitors/:id', async (req, res) => {
     const id = Number(req.params.id);
     const monitor = await store.getMonitorById(id);
