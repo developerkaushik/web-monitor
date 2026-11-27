@@ -3,12 +3,86 @@ const crypto = require('node:crypto');
 const SESSION_COOKIE = 'us_session';
 const SESSION_TTL_HOURS = 24;
 const revokedTokens = new Set();
+const ephemeralFallbackSecret = crypto.randomBytes(32);
+let cachedDbSecret = null;
 
-function getSessionSecret() {
-  const base =
-    process.env.SESSION_SECRET ||
-    `us:${process.env.ADMIN_USERNAME || 'admin'}:${process.env.ADMIN_PASSWORD || 'admin123'}:session-key`;
-  return crypto.createHash('sha256').update(base).digest();
+function getSessionSecret(secretOverride) {
+  if (secretOverride) {
+    return crypto.createHash('sha256').update(String(secretOverride)).digest();
+  }
+  if (process.env.SESSION_SECRET) {
+    return crypto.createHash('sha256').update(process.env.SESSION_SECRET).digest();
+  }
+  if (cachedDbSecret) {
+    return cachedDbSecret;
+  }
+  return ephemeralFallbackSecret;
+}
+
+/**
+ * Loads or generates a persistent random 256-bit signing secret in the store's settings
+ * when SESSION_SECRET env var is not explicitly configured.
+ * @param {ReturnType<import('./db').createDatabase>} store
+ */
+async function ensureSessionSecret(store) {
+  if (process.env.SESSION_SECRET) {
+    return getSessionSecret();
+  }
+  if (cachedDbSecret) return cachedDbSecret;
+  try {
+    const settings = await store.getSettings();
+    let hex = settings.session_secret;
+    if (!hex || hex.length < 32) {
+      hex = crypto.randomBytes(32).toString('hex');
+      await store.updateSettings({ session_secret: hex });
+    }
+    cachedDbSecret = crypto.createHash('sha256').update(hex).digest();
+    return cachedDbSecret;
+  } catch {
+    return ephemeralFallbackSecret;
+  }
+}
+
+/**
+ * Encrypts a sensitive string (e.g. SMTP password) using AES-256-GCM.
+ * @param {string} plaintext
+ * @param {Buffer} [key]
+ * @returns {string}
+ */
+function encryptSecret(plaintext, key) {
+  if (!plaintext) return '';
+  if (String(plaintext).startsWith('enc:v1:')) return String(plaintext);
+  const encKey = key || getSessionSecret();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', encKey, iv);
+  const encrypted = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString('base64url')}:${tag.toString('base64url')}:${encrypted.toString('base64url')}`;
+}
+
+/**
+ * Decrypts an AES-256-GCM secret; returns plaintext as-is for legacy unencrypted values.
+ * @param {string} value
+ * @param {Buffer} [key]
+ * @returns {string}
+ */
+function decryptSecret(value, key) {
+  if (!value) return '';
+  const str = String(value);
+  if (!str.startsWith('enc:v1:')) return str;
+  const parts = str.split(':');
+  if (parts.length !== 5) return '';
+  try {
+    const iv = Buffer.from(parts[2], 'base64url');
+    const tag = Buffer.from(parts[3], 'base64url');
+    const data = Buffer.from(parts[4], 'base64url');
+    const encKey = key || getSessionSecret();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', encKey, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -18,12 +92,14 @@ function getSessionSecret() {
  * @returns {string}
  */
 function signSessionToken(user, ttlHours = SESSION_TTL_HOURS) {
+  const now = Date.now();
   const payloadObj = {
     uid: user.id,
     u: user.username,
     r: user.role || 'admin',
     jti: crypto.randomBytes(8).toString('hex'),
-    exp: Date.now() + Math.max(1, Number(ttlHours)) * 3600 * 1000,
+    iat: now,
+    exp: now + Math.max(1, Number(ttlHours)) * 3600 * 1000,
   };
   const payload = Buffer.from(JSON.stringify(payloadObj), 'utf8').toString('base64url');
   const sig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('base64url');
@@ -33,9 +109,10 @@ function signSessionToken(user, ttlHours = SESSION_TTL_HOURS) {
 /**
  * Verifies a stateless signed session token.
  * @param {string} token
- * @returns {{ user_id: number, username: string, role: string } | null}
+ * @param {number} [minIat]
+ * @returns {{ user_id: number, username: string, role: string, iat?: number } | null}
  */
-function verifySessionToken(token) {
+function verifySessionToken(token, minIat = 0) {
   if (!token || typeof token !== 'string' || !token.includes('.')) return null;
   if (revokedTokens.has(token)) return null;
   const [payload, sig] = token.split('.');
@@ -57,10 +134,14 @@ function verifySessionToken(token) {
     if (!data || typeof data.exp !== 'number' || data.exp <= Date.now()) {
       return null;
     }
+    if (minIat > 0 && (!data.iat || data.iat < minIat)) {
+      return null;
+    }
     return {
       user_id: data.uid,
       username: data.u,
       role: data.r || 'admin',
+      iat: data.iat,
     };
   } catch {
     return null;
@@ -143,11 +224,14 @@ function extractToken(req) {
 function requireAuth(store) {
   return async (req, res, next) => {
     try {
+      await ensureSessionSecret(store);
       const token = extractToken(req);
       if (!token) {
         return res.status(401).json({ error: 'Authentication required' });
       }
-      const session = verifySessionToken(token) || (await store.getSession(token));
+      const settings = await store.getSettings();
+      const minIat = Number(settings.min_token_iat || 0);
+      const session = verifySessionToken(token, minIat) || (await store.getSession(token));
       if (!session) {
         return res.status(401).json({ error: 'Session expired or invalid' });
       }
@@ -189,6 +273,9 @@ module.exports = {
   SESSION_TTL_HOURS,
   hashPassword,
   verifyPassword,
+  ensureSessionSecret,
+  encryptSecret,
+  decryptSecret,
   signSessionToken,
   verifySessionToken,
   revokeSessionToken,

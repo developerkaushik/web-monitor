@@ -29,7 +29,9 @@ function createPostgresStore(connectionString, options = {}) {
 
   const pool = new Pool({
     connectionString,
-    ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
+    ssl: needsSsl
+      ? { rejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED !== 'false' }
+      : undefined,
     max: 5,
     idleTimeoutMillis: 20000,
     connectionTimeoutMillis: 15000,

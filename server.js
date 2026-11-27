@@ -45,19 +45,31 @@ function createApp(options = {}) {
   });
 
   const app = express();
+  app.disable('x-powered-by');
   // Trust reverse proxy (Hostinger Nginx/LiteSpeed SSL termination)
   app.set('trust proxy', 1);
 
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+    );
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
     next();
   });
 
   app.use(express.json({ limit: '1mb' }));
   app.use(express.static(path.join(__dirname, 'public')));
-  app.use('/api', createApiRouter({ store, engine, mailer }));
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  }, createApiRouter({ store, engine, mailer }));
 
   app.get('/{*splat}', (_req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));

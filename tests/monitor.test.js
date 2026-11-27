@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { createApp } = require('../server');
 
+process.env.ALLOW_PRIVATE_TARGETS = 'true';
+
 function createMockTransport() {
   const sent = [];
   return {
@@ -197,6 +199,103 @@ test('JSON fallback store works identically when node:sqlite is unavailable (Nod
   }
 });
 
+test('Security controls: fail-closed CRON_SECRET, SSRF blocking, security headers, encrypted smtp_pass, and token invalidation', async () => {
+  const transport = createMockTransport();
+  const { app, store } = createApp({
+    dbPath: ':memory:',
+    transport,
+    emitEvents: false,
+    adminUsername: 'admin',
+    adminPassword: 'strong-admin-password',
+  });
+
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const prevCron = process.env.CRON_SECRET;
+  const prevAllowPrivate = process.env.ALLOW_PRIVATE_TARGETS;
+
+  try {
+    // 1. Security headers & X-Powered-By disabled
+    const healthRes = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthRes.headers.get('x-powered-by'), null);
+    assert.equal(healthRes.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(healthRes.headers.get('x-frame-options'), 'DENY');
+    assert.equal(healthRes.headers.get('cache-control'), 'no-store');
+    assert.ok(healthRes.headers.get('content-security-policy'));
+
+    // 2. Fail-closed CRON_SECRET
+    delete process.env.CRON_SECRET;
+    const cronUnconfigured = await fetch(`${baseUrl}/api/cron/check`);
+    assert.equal(cronUnconfigured.status, 503);
+
+    process.env.CRON_SECRET = 'cron-test-secret-123';
+    const cronBad = await fetch(`${baseUrl}/api/cron/check?secret=wrong`);
+    assert.equal(cronBad.status, 401);
+
+    const cronOk = await fetch(`${baseUrl}/api/cron/check`, {
+      headers: { Authorization: 'Bearer cron-test-secret-123' },
+    });
+    assert.equal(cronOk.status, 200);
+
+    // Login
+    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'strong-admin-password' }),
+    });
+    assert.equal(loginRes.status, 200);
+    const cookieHeader = loginRes.headers.get('set-cookie').split(';')[0];
+
+    // 3. SSRF blocking when ALLOW_PRIVATE_TARGETS is not true
+    process.env.ALLOW_PRIVATE_TARGETS = 'false';
+    for (const ssrfUrl of [
+      'http://127.0.0.1:3000/api/health',
+      'http://localhost:3000/',
+      'http://169.254.169.254/latest/meta-data/',
+    ]) {
+      const ssrfRes = await fetch(`${baseUrl}/api/monitors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+        body: JSON.stringify({ name: 'SSRF Test', url: ssrfUrl }),
+      });
+      assert.equal(ssrfRes.status, 400, `Expected SSRF block for ${ssrfUrl}`);
+    }
+
+    // 4. Encrypted smtp_pass at rest
+    await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({ smtp_pass: 'my-gmail-app-pass' }),
+    });
+    const rawSettings = await store.getSettings();
+    assert.ok(rawSettings.smtp_pass.startsWith('enc:v1:'));
+
+    // 5. Password change invalidates prior session tokens
+    const pwChange = await fetch(`${baseUrl}/api/auth/change-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({
+        current_password: 'strong-admin-password',
+        new_password: 'new-strong-password-456',
+      }),
+    });
+    assert.equal(pwChange.status, 200);
+
+    const oldTokenUse = await fetch(`${baseUrl}/api/monitors`, {
+      headers: { Cookie: cookieHeader },
+    });
+    assert.equal(oldTokenUse.status, 401);
+  } finally {
+    if (prevCron === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = prevCron;
+    process.env.ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
+    await new Promise((r) => server.close(r));
+    store.close();
+  }
+});
+
 test('REST API requires admin login and supports CRUD, validation, password change, and logout', async () => {
   const target = await startTargetServer();
   const transport = createMockTransport();
@@ -347,6 +446,103 @@ test('REST API requires admin login and supports CRUD, validation, password chan
   }
 });
 
+test('Security controls: fail-closed CRON_SECRET, SSRF blocking, security headers, encrypted smtp_pass, and token invalidation', async () => {
+  const transport = createMockTransport();
+  const { app, store } = createApp({
+    dbPath: ':memory:',
+    transport,
+    emitEvents: false,
+    adminUsername: 'admin',
+    adminPassword: 'strong-admin-password',
+  });
+
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const prevCron = process.env.CRON_SECRET;
+  const prevAllowPrivate = process.env.ALLOW_PRIVATE_TARGETS;
+
+  try {
+    // 1. Security headers & X-Powered-By disabled
+    const healthRes = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthRes.headers.get('x-powered-by'), null);
+    assert.equal(healthRes.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(healthRes.headers.get('x-frame-options'), 'DENY');
+    assert.equal(healthRes.headers.get('cache-control'), 'no-store');
+    assert.ok(healthRes.headers.get('content-security-policy'));
+
+    // 2. Fail-closed CRON_SECRET
+    delete process.env.CRON_SECRET;
+    const cronUnconfigured = await fetch(`${baseUrl}/api/cron/check`);
+    assert.equal(cronUnconfigured.status, 503);
+
+    process.env.CRON_SECRET = 'cron-test-secret-123';
+    const cronBad = await fetch(`${baseUrl}/api/cron/check?secret=wrong`);
+    assert.equal(cronBad.status, 401);
+
+    const cronOk = await fetch(`${baseUrl}/api/cron/check`, {
+      headers: { Authorization: 'Bearer cron-test-secret-123' },
+    });
+    assert.equal(cronOk.status, 200);
+
+    // Login
+    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'strong-admin-password' }),
+    });
+    assert.equal(loginRes.status, 200);
+    const cookieHeader = loginRes.headers.get('set-cookie').split(';')[0];
+
+    // 3. SSRF blocking when ALLOW_PRIVATE_TARGETS is not true
+    process.env.ALLOW_PRIVATE_TARGETS = 'false';
+    for (const ssrfUrl of [
+      'http://127.0.0.1:3000/api/health',
+      'http://localhost:3000/',
+      'http://169.254.169.254/latest/meta-data/',
+    ]) {
+      const ssrfRes = await fetch(`${baseUrl}/api/monitors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+        body: JSON.stringify({ name: 'SSRF Test', url: ssrfUrl }),
+      });
+      assert.equal(ssrfRes.status, 400, `Expected SSRF block for ${ssrfUrl}`);
+    }
+
+    // 4. Encrypted smtp_pass at rest
+    await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({ smtp_pass: 'my-gmail-app-pass' }),
+    });
+    const rawSettings = await store.getSettings();
+    assert.ok(rawSettings.smtp_pass.startsWith('enc:v1:'));
+
+    // 5. Password change invalidates prior session tokens
+    const pwChange = await fetch(`${baseUrl}/api/auth/change-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({
+        current_password: 'strong-admin-password',
+        new_password: 'new-strong-password-456',
+      }),
+    });
+    assert.equal(pwChange.status, 200);
+
+    const oldTokenUse = await fetch(`${baseUrl}/api/monitors`, {
+      headers: { Cookie: cookieHeader },
+    });
+    assert.equal(oldTokenUse.status, 401);
+  } finally {
+    if (prevCron === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = prevCron;
+    process.env.ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
+    await new Promise((r) => server.close(r));
+    store.close();
+  }
+});
+
 test('Captures database connection errors (HTTP 200, HTTP 500, and JSON health) and notifies multiple emails', async () => {
   const target = await startTargetServer();
   const transport = createMockTransport();
@@ -461,5 +657,102 @@ test('JSON fallback store works identically when node:sqlite is unavailable (Nod
     await new Promise((r) => server.close(r));
     store.close();
     await target.close();
+  }
+});
+
+test('Security controls: fail-closed CRON_SECRET, SSRF blocking, security headers, encrypted smtp_pass, and token invalidation', async () => {
+  const transport = createMockTransport();
+  const { app, store } = createApp({
+    dbPath: ':memory:',
+    transport,
+    emitEvents: false,
+    adminUsername: 'admin',
+    adminPassword: 'strong-admin-password',
+  });
+
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const prevCron = process.env.CRON_SECRET;
+  const prevAllowPrivate = process.env.ALLOW_PRIVATE_TARGETS;
+
+  try {
+    // 1. Security headers & X-Powered-By disabled
+    const healthRes = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthRes.headers.get('x-powered-by'), null);
+    assert.equal(healthRes.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(healthRes.headers.get('x-frame-options'), 'DENY');
+    assert.equal(healthRes.headers.get('cache-control'), 'no-store');
+    assert.ok(healthRes.headers.get('content-security-policy'));
+
+    // 2. Fail-closed CRON_SECRET
+    delete process.env.CRON_SECRET;
+    const cronUnconfigured = await fetch(`${baseUrl}/api/cron/check`);
+    assert.equal(cronUnconfigured.status, 503);
+
+    process.env.CRON_SECRET = 'cron-test-secret-123';
+    const cronBad = await fetch(`${baseUrl}/api/cron/check?secret=wrong`);
+    assert.equal(cronBad.status, 401);
+
+    const cronOk = await fetch(`${baseUrl}/api/cron/check`, {
+      headers: { Authorization: 'Bearer cron-test-secret-123' },
+    });
+    assert.equal(cronOk.status, 200);
+
+    // Login
+    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'strong-admin-password' }),
+    });
+    assert.equal(loginRes.status, 200);
+    const cookieHeader = loginRes.headers.get('set-cookie').split(';')[0];
+
+    // 3. SSRF blocking when ALLOW_PRIVATE_TARGETS is not true
+    process.env.ALLOW_PRIVATE_TARGETS = 'false';
+    for (const ssrfUrl of [
+      'http://127.0.0.1:3000/api/health',
+      'http://localhost:3000/',
+      'http://169.254.169.254/latest/meta-data/',
+    ]) {
+      const ssrfRes = await fetch(`${baseUrl}/api/monitors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+        body: JSON.stringify({ name: 'SSRF Test', url: ssrfUrl }),
+      });
+      assert.equal(ssrfRes.status, 400, `Expected SSRF block for ${ssrfUrl}`);
+    }
+
+    // 4. Encrypted smtp_pass at rest
+    await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({ smtp_pass: 'my-gmail-app-pass' }),
+    });
+    const rawSettings = await store.getSettings();
+    assert.ok(rawSettings.smtp_pass.startsWith('enc:v1:'));
+
+    // 5. Password change invalidates prior session tokens
+    const pwChange = await fetch(`${baseUrl}/api/auth/change-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      body: JSON.stringify({
+        current_password: 'strong-admin-password',
+        new_password: 'new-strong-password-456',
+      }),
+    });
+    assert.equal(pwChange.status, 200);
+
+    const oldTokenUse = await fetch(`${baseUrl}/api/monitors`, {
+      headers: { Cookie: cookieHeader },
+    });
+    assert.equal(oldTokenUse.status, 401);
+  } finally {
+    if (prevCron === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = prevCron;
+    process.env.ALLOW_PRIVATE_TARGETS = prevAllowPrivate;
+    await new Promise((r) => server.close(r));
+    store.close();
   }
 });

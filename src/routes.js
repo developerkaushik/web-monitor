@@ -1,8 +1,12 @@
+const crypto = require('node:crypto');
 const express = require('express');
 const { addClient, broadcast } = require('./events');
+const { assertSafeTargetUrl } = require('./ssrf');
 const {
   verifyPassword,
   hashPassword,
+  ensureSessionSecret,
+  encryptSecret,
   signSessionToken,
   verifySessionToken,
   revokeSessionToken,
@@ -38,6 +42,11 @@ function createApiRouter({ store, engine, mailer }) {
   function checkLoginRateLimit(ip) {
     const now = Date.now();
     const windowMs = 15 * 60 * 1000;
+    if (loginAttempts.size > 1000) {
+      for (const [k, v] of loginAttempts) {
+        if (now - v.windowStart > windowMs) loginAttempts.delete(k);
+      }
+    }
     const entry = loginAttempts.get(ip);
     if (!entry || now - entry.windowStart > windowMs) {
       loginAttempts.set(ip, { count: 1, windowStart: now });
@@ -45,6 +54,13 @@ function createApiRouter({ store, engine, mailer }) {
     }
     entry.count += 1;
     return entry.count <= 15;
+  }
+
+  function constantTimeEqual(a, b) {
+    const bufA = Buffer.from(String(a), 'utf8');
+    const bufB = Buffer.from(String(b), 'utf8');
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
   }
 
   router.get('/health', (_req, res) => {
@@ -61,17 +77,19 @@ function createApiRouter({ store, engine, mailer }) {
     });
   });
 
-  // Serverless Cron endpoint (e.g. Vercel Cron or cron-job.org)
+  // Serverless Cron endpoint (fail-closed: requires CRON_SECRET to be configured)
   async function handleCronCheck(req, res) {
     const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-      const authHeader = req.headers.authorization || '';
-      const querySecret = req.query?.secret || '';
-      const validBearer = authHeader === `Bearer ${cronSecret}`;
-      const validQuery = querySecret === cronSecret;
-      if (!validBearer && !validQuery) {
-        return res.status(401).json({ error: 'Invalid cron secret' });
-      }
+    if (!cronSecret) {
+      return res.status(503).json({ error: 'CRON_SECRET is not configured on the server' });
+    }
+    const authHeader = req.headers.authorization || '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const querySecret = String(req.query?.secret || '');
+    const validBearer = bearer && constantTimeEqual(bearer, cronSecret);
+    const validQuery = querySecret && constantTimeEqual(querySecret, cronSecret);
+    if (!validBearer && !validQuery) {
+      return res.status(401).json({ error: 'Invalid cron secret' });
     }
     const checked = await engine.tick();
     res.json({ ok: true, checked, timestamp: new Date().toISOString() });
@@ -94,6 +112,7 @@ function createApiRouter({ store, engine, mailer }) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
+    await ensureSessionSecret(store);
     await store.pruneExpiredSessions();
     const token = signSessionToken(user);
     res.setHeader('Set-Cookie', buildSessionCookie(token, req));
@@ -113,8 +132,11 @@ function createApiRouter({ store, engine, mailer }) {
   });
 
   router.get('/auth/me', async (req, res) => {
+    await ensureSessionSecret(store);
     const token = extractToken(req);
-    const session = token ? verifySessionToken(token) || (await store.getSession(token)) : null;
+    const settings = token ? await store.getSettings() : {};
+    const minIat = Number(settings.min_token_iat || 0);
+    const session = token ? verifySessionToken(token, minIat) || (await store.getSession(token)) : null;
     if (!session) {
       return res.status(401).json({ authenticated: false });
     }
@@ -132,8 +154,8 @@ function createApiRouter({ store, engine, mailer }) {
     if (!current_password || !new_password) {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
-    if (String(new_password).length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    if (String(new_password).length < 10) {
+      return res.status(400).json({ error: 'New password must be at least 10 characters' });
     }
 
     const user = await store.getUserById(req.user.id);
@@ -142,6 +164,8 @@ function createApiRouter({ store, engine, mailer }) {
     }
 
     await store.updateUserPassword(user.id, hashPassword(String(new_password)));
+    await store.deleteUserSessions(user.id);
+    await store.updateSettings({ min_token_iat: String(Date.now()) });
     res.json({ ok: true });
   });
 
@@ -187,6 +211,11 @@ function createApiRouter({ store, engine, mailer }) {
     if (!url || !isValidHttpUrl(String(url).trim())) {
       return res.status(400).json({ error: 'A valid http:// or https:// URL is required' });
     }
+    try {
+      await assertSafeTargetUrl(String(url).trim());
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
     if (interval_seconds !== undefined && Number(interval_seconds) < 5) {
       return res.status(400).json({ error: 'Interval must be at least 5 seconds' });
     }
@@ -221,8 +250,15 @@ function createApiRouter({ store, engine, mailer }) {
 
   router.put('/monitors/:id', async (req, res) => {
     const id = Number(req.params.id);
-    if (req.body?.url !== undefined && !isValidHttpUrl(String(req.body.url).trim())) {
-      return res.status(400).json({ error: 'A valid http:// or https:// URL is required' });
+    if (req.body?.url !== undefined) {
+      if (!isValidHttpUrl(String(req.body.url).trim())) {
+        return res.status(400).json({ error: 'A valid http:// or https:// URL is required' });
+      }
+      try {
+        await assertSafeTargetUrl(String(req.body.url).trim());
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
     }
     if (req.body?.interval_seconds !== undefined && Number(req.body.interval_seconds) < 5) {
       return res.status(400).json({ error: 'Interval must be at least 5 seconds' });
@@ -314,12 +350,13 @@ function createApiRouter({ store, engine, mailer }) {
       'notify_on_recovery',
       'retention_days',
     ];
+    await ensureSessionSecret(store);
     const updates = {};
     for (const key of allowedKeys) {
       if (req.body?.[key] !== undefined) {
         // Keep existing password if blank string is sent
         if (key === 'smtp_pass' && req.body[key] === '') continue;
-        updates[key] = req.body[key];
+        updates[key] = key === 'smtp_pass' ? encryptSecret(req.body[key]) : req.body[key];
       }
     }
     const saved = await store.updateSettings(updates);

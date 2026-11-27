@@ -1,4 +1,5 @@
 const { broadcast } = require('./events');
+const { assertSafeTargetUrl } = require('./ssrf');
 
 const DB_ERROR_PATTERNS = [
   { label: 'Database connection error', regex: /error establishing a database connection/i },
@@ -78,15 +79,30 @@ async function performHttpCheck(monitor) {
 
   try {
     const method = (monitor.method || 'GET').toUpperCase();
-    const response = await fetch(monitor.url, {
-      method,
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'UptimeSentinel/1.0 (+https://uptime-sentinel.local)',
-        Accept: '*/*',
-      },
-    });
+    let currentUrl = monitor.url;
+    let response = null;
+
+    for (let hop = 0; hop <= 5; hop += 1) {
+      await assertSafeTargetUrl(currentUrl);
+      response = await fetch(currentUrl, {
+        method,
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'UptimeSentinel/1.0 (+https://uptime-sentinel.local)',
+          Accept: '*/*',
+        },
+      });
+
+      if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+        if (hop === 5) {
+          throw new Error('Too many HTTP redirects');
+        }
+        currentUrl = new URL(response.headers.get('location'), currentUrl).toString();
+        continue;
+      }
+      break;
+    }
 
     const latencyMs = Math.max(1, Math.round(performance.now() - start));
     const expected = Number(monitor.expected_status || 200);

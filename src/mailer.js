@@ -1,7 +1,12 @@
 const nodemailer = require('nodemailer');
 const { parseEmails } = require('./db');
+const { decryptSecret } = require('./auth');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function sanitizeHeaderValue(val) {
+  return String(val ?? '').replace(/[\r\n]+/g, ' ').trim();
+}
 
 /**
  * Formats seconds into a human-readable duration string.
@@ -76,7 +81,7 @@ function createMailer(store, options = {}) {
     if (settings.smtp_user) {
       config.auth = {
         user: settings.smtp_user,
-        pass: settings.smtp_pass || '',
+        pass: decryptSecret(settings.smtp_pass || ''),
       };
     }
 
@@ -119,9 +124,9 @@ function createMailer(store, options = {}) {
 
     try {
       await transport.sendMail({
-        from: settings.smtp_from || 'Uptime Sentinel <alerts@uptime-sentinel.local>',
-        to: recipients.join(', '),
-        subject,
+        from: sanitizeHeaderValue(settings.smtp_from || 'Uptime Sentinel <alerts@uptime-sentinel.local>'),
+        to: recipients.map(sanitizeHeaderValue).join(', '),
+        subject: sanitizeHeaderValue(subject),
         text,
         html,
       });
@@ -240,9 +245,9 @@ function createMailer(store, options = {}) {
 
     try {
       await transport.sendMail({
-        from: settings.smtp_from || 'Uptime Sentinel <alerts@uptime-sentinel.local>',
-        to: recipients.join(', '),
-        subject,
+        from: sanitizeHeaderValue(settings.smtp_from || 'Uptime Sentinel <alerts@uptime-sentinel.local>'),
+        to: recipients.map(sanitizeHeaderValue).join(', '),
+        subject: sanitizeHeaderValue(subject),
         text,
         html,
       });
@@ -290,9 +295,9 @@ function createMailer(store, options = {}) {
 
     try {
       await transport.sendMail({
-        from: settings.smtp_from || 'Uptime Sentinel <alerts@uptime-sentinel.local>',
-        to: recipients.join(', '),
-        subject,
+        from: sanitizeHeaderValue(settings.smtp_from || 'Uptime Sentinel <alerts@uptime-sentinel.local>'),
+        to: recipients.map(sanitizeHeaderValue).join(', '),
+        subject: sanitizeHeaderValue(subject),
         text,
         html,
       });
